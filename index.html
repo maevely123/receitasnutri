@@ -868,39 +868,151 @@ var elementorFrontendConfig = {"environmentMode":{"edit":false,"wpPreview":false
 <script src="https://areceitadodia.com/wp-content/plugins/elementor/assets/js/frontend.min.js?ver=3.24.7" id="elementor-frontend-js"></script>
 <script src="https://areceitadodia.com/wp-content/plugins/pro-elements/assets/js/elements-handlers.min.js?ver=3.23.3" id="pro-elements-handlers-js"></script>
 	  <script>
-(function () {
-  // 1) Remover handlers inline que retornam false
-  const attrs = ['oncontextmenu','onselectstart','onmousedown','onmouseup','onkeydown','oncopy','oncut','ondragstart'];
-  const all = document.querySelectorAll('*');
-  for (const el of all) {
-    for (const a of attrs) {
-      if (el.hasAttribute(a)) el.setAttribute(a, '');
-    }
-  }
-
-  // 2) Bloquear (em captura) os listeners que tentam bloquear o padrão
-  const types = ['contextmenu','selectstart','copy','cut','dragstart'];
-  for (const t of types) {
-    window.addEventListener(t, e => { e.stopImmediatePropagation(); e.stopPropagation(); }, true);
-    document.addEventListener(t, e => { e.stopImmediatePropagation(); e.stopPropagation(); }, true);
-  }
-
-  // 3) Restaurar handlers "globais"
-  document.oncontextmenu = null;
-  document.onselectstart = null;
-
-  // 4) CSS para reabilitar seleção/cópia
-  const style = document.createElement('style');
-  style.textContent = `
+(() => {
+  // --- Config ---
+  const TYPES = ['contextmenu','selectstart','copy','cut','dragstart'];
+  const INLINE_ATTRS = ['oncontextmenu','onselectstart','oncopy','oncut','ondragstart','onmousedown','onmouseup','onkeydown'];
+  const STYLE_CSS = `
     html, body, *, *::before, *::after {
-      -webkit-user-select: text !important;
       user-select: text !important;
+      -webkit-user-select: text !important;
+      -ms-user-select: text !important;
+      -moz-user-select: text !important;
     }
     body { -webkit-touch-callout: default !important; }
   `;
+
+  // --- Utils ---
+  const safeIter = (root, fn) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    for (let n = root; n; n = (n === root ? walker.nextNode() : n)) {
+      fn(n);
+      // Shadow DOM
+      if (n.shadowRoot) safeIter(n.shadowRoot, fn);
+      // Avança walker quando estamos no root
+      if (n === root) n = walker.currentNode;
+    }
+  };
+
+  const removeInlineHandlers = (root) => {
+    safeIter(root, el => {
+      for (const a of INLINE_ATTRS) if (el.hasAttribute(a)) el.setAttribute(a, '');
+      const s = getComputedStyle(el);
+      if (s.userSelect === 'none' || s.webkitUserSelect === 'none') {
+        el.style.setProperty('user-select', 'text', 'important');
+        el.style.setProperty('-webkit-user-select', 'text', 'important');
+      }
+      if (el.contentEditable === 'inherit' || el.contentEditable === 'false') {
+        // Não força a edição, só garante seleção
+      }
+    });
+  };
+
+  // Neutraliza overlays óbvios (cobrem quase toda a tela)
+  const disableOverlays = (root) => {
+    const vw = (n) => (n / Math.max(1, document.documentElement.clientWidth)) * 100;
+    const vh = (n) => (n / Math.max(1, document.documentElement.clientHeight)) * 100;
+    safeIter(root, el => {
+      const st = getComputedStyle(el);
+      if ((st.position === 'fixed' || st.position === 'absolute') && st.display !== 'none') {
+        const r = el.getBoundingClientRect();
+        if (vw(r.width) > 90 && vh(r.height) > 90 && parseInt(st.zIndex || 0, 10) >= 10) {
+          el.style.setProperty('pointer-events', 'none', 'important');
+        }
+      }
+    });
+  };
+
+  // Injeta CSS global pró-seleção
+  const style = document.createElement('style');
+  style.setAttribute('data-unlock', 'true');
+  style.appendChild(document.createTextNode(STYLE_CSS));
   document.documentElement.appendChild(style);
+
+  // Captura: impede que scripts bloqueiem o default/propagação
+  const captureGuard = (e) => {
+    // deixa o default habilitado
+    try {
+      Object.defineProperty(e, 'returnValue', { value: true, configurable: true });
+    } catch {}
+    // neutraliza preventDefault só neste evento
+    const orig = e.preventDefault;
+    e.preventDefault = function() {}; // no-op
+    // e bloqueia handlers abaixo
+    e.stopImmediatePropagation();
+    e.stopPropagation();
+    // restaura preventDefault depois que a fila atual roda (microtask)
+    queueMicrotask(() => { e.preventDefault = orig; });
+  };
+  for (const t of TYPES) {
+    window.addEventListener(t, captureGuard, true);
+    document.addEventListener(t, captureGuard, true);
+  }
+  // também limpa handlers globais
+  document.oncontextmenu = null;
+  document.onselectstart = null;
+
+  // Remove inline + overlays já existentes
+  removeInlineHandlers(document);
+  disableOverlays(document);
+
+  // Iframes de mesma origem
+  const unlockFrame = (f) => {
+    try {
+      const d = f.contentDocument;
+      if (!d) return;
+      d.addEventListener('DOMContentLoaded', () => {
+        d.documentElement.appendChild(d.adoptNode(style.cloneNode(true)));
+        for (const t of TYPES) {
+          d.defaultView.addEventListener(t, captureGuard, true);
+          d.addEventListener(t, captureGuard, true);
+        }
+        removeInlineHandlers(d);
+        disableOverlays(d);
+      });
+      // Se já carregou:
+      d.documentElement.appendChild(d.adoptNode(style.cloneNode(true)));
+      for (const t of TYPES) {
+        d.defaultView.addEventListener(t, captureGuard, true);
+        d.addEventListener(t, captureGuard, true);
+      }
+      removeInlineHandlers(d);
+      disableOverlays(d);
+    } catch { /* cross-origin, não dá pra tocar */ }
+  };
+  document.querySelectorAll('iframe').forEach(unlockFrame);
+
+  // Observa mutações dinâmicas (SPA, loaders, etc.)
+  const mo = new MutationObserver((muts) => {
+    for (const m of muts) {
+      if (m.type === 'attributes') {
+        if (INLINE_ATTRS.includes(m.attributeName)) m.target.setAttribute(m.attributeName, '');
+      } else {
+        m.addedNodes.forEach(node => {
+          if (node.nodeType === 1) {
+            removeInlineHandlers(node);
+            disableOverlays(node);
+            if (node.tagName === 'IFRAME') unlockFrame(node);
+          }
+        });
+      }
+    }
+  });
+  mo.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: INLINE_ATTRS });
+
+  // Qualidade de vida: Ctrl/Cmd+C sempre copia seleção (sem bloquear)
+  document.addEventListener('keydown', (e) => {
+    const meta = navigator.platform.includes('Mac') ? e.metaKey : e.ctrlKey;
+    if (meta && (e.key === 'c' || e.key === 'x')) {
+      e.stopImmediatePropagation();
+    }
+  }, true);
+
+  // Log rápido no console
+  console.info('[unlock] seleção e cópia liberadas.');
 })();
 </script>
+
 
    </body>
 </html>
@@ -908,4 +1020,5 @@ var elementorFrontendConfig = {"environmentMode":{"edit":false,"wpPreview":false
 
 
 <!-- Page cached by LiteSpeed Cache 7.1 on 2025-08-15 20:46:54 -->
+
 
