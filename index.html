@@ -867,9 +867,45 @@ var elementorFrontendConfig = {"environmentMode":{"edit":false,"wpPreview":false
 </script>
 <script src="https://areceitadodia.com/wp-content/plugins/elementor/assets/js/frontend.min.js?ver=3.24.7" id="elementor-frontend-js"></script>
 <script src="https://areceitadodia.com/wp-content/plugins/pro-elements/assets/js/elements-handlers.min.js?ver=3.23.3" id="pro-elements-handlers-js"></script>
-	</body>
+	  <script>
+(function () {
+  // 1) Remover handlers inline que retornam false
+  const attrs = ['oncontextmenu','onselectstart','onmousedown','onmouseup','onkeydown','oncopy','oncut','ondragstart'];
+  const all = document.querySelectorAll('*');
+  for (const el of all) {
+    for (const a of attrs) {
+      if (el.hasAttribute(a)) el.setAttribute(a, '');
+    }
+  }
+
+  // 2) Bloquear (em captura) os listeners que tentam bloquear o padrão
+  const types = ['contextmenu','selectstart','copy','cut','dragstart'];
+  for (const t of types) {
+    window.addEventListener(t, e => { e.stopImmediatePropagation(); e.stopPropagation(); }, true);
+    document.addEventListener(t, e => { e.stopImmediatePropagation(); e.stopPropagation(); }, true);
+  }
+
+  // 3) Restaurar handlers "globais"
+  document.oncontextmenu = null;
+  document.onselectstart = null;
+
+  // 4) CSS para reabilitar seleção/cópia
+  const style = document.createElement('style');
+  style.textContent = `
+    html, body, *, *::before, *::after {
+      -webkit-user-select: text !important;
+      user-select: text !important;
+    }
+    body { -webkit-touch-callout: default !important; }
+  `;
+  document.documentElement.appendChild(style);
+})();
+</script>
+
+   </body>
 </html>
 
 
 
 <!-- Page cached by LiteSpeed Cache 7.1 on 2025-08-15 20:46:54 -->
+
